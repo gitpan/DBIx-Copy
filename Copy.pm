@@ -12,7 +12,7 @@ use vars qw( $VERSION );
 use DBI;
 
 # Remember to update the POD (yeah, even the version number)!
-$VERSION=0.01;
+$VERSION=0.02;
 
 # Initiate a new object:
 sub new {
@@ -24,15 +24,87 @@ sub new {
 	opts=>$options
     };
 
-    # The only check that is done about whether the input parameters are OK:
-    die "source and target needed" unless defined $dbh_source and defined $dbh_target;
+    # The only check that is done about whether the input parameters
+    # are OK:
+    die "source and target needed" 
+	unless (defined $dbh_source and defined $dbh_target);
 
-    bless $self, $class; 
+    bless $self, $class;
     return $self;
 } 
 
 # Copy the data - without taking any parameters into consideration for
-# the time beeing.
+# the time beeing.  Returns number of rows copied.  It might be handy
+# for convertion tools to inherit this class and override this sub for
+# tables that needs special handling.
+
+# This seems like a bad way to do it - I branch too much of the code
+# dependent on whether column_translation_table is set or not.
+sub copy_one_table {
+    my $self=shift;
+    my $table=shift;
+    
+    my $cnt=0;
+
+    my $dest = $self->{opts}->{table_translation_table}->{$table} || $table;
+    
+    my $select;
+    my $insert;
+    my $row;
+
+    if (exists $self->{opts}->{column_translation_table}->{$table}) {
+
+	my $c=$self->{opts}->{column_translation_table}->{$table};
+
+	# Selecting referenced columns
+	my $cols=join(",", keys(%$c));
+	$select=$self->{'src'}->prepare("select $cols from $table") || return undef;
+	$select->execute() || return undef;
+	
+	# Deleting all the destination table
+	$self->{dst}->do("delete from $dest") || return undef;
+	
+	# Finding the right insert statement
+	# There must be a better way to do this ... suggestions?
+	my @qmarks;
+	for (keys %$c) {push (@qmarks, '?')};
+
+	$cols=join(",", values(%$c));
+
+	my $qmarks = join(',',@qmarks);
+	$insert=$self->{dst}->prepare("insert into $dest ($cols) values ($qmarks)") || return undef;
+
+	$row=$select->fetch(); 
+
+    } else {
+
+	# Selecting all the table
+	$select=$self->{'src'}->prepare("select * from $table") || return undef;
+	$select->execute() || return undef;
+	
+	# Deleting all the destination table
+	$self->{dst}->do("delete from $dest") || return undef;
+	$row=$select->fetch(); 
+	
+	# Finding the right insert statement
+	# There must be a better way to do this ... suggestions?
+	my @qmarks;
+	for (@$row) {push (@qmarks, '?')};
+	my $qmarks = join(',',@qmarks);
+	$insert=$self->{dst}->prepare("insert into $dest values ($qmarks)") || return undef;
+    }
+	
+    while (defined $row) {
+	$cnt++;
+	$insert->execute(@$row);
+	$row=$select->fetch;
+	$insert->finish;
+    }
+    $select->finish;
+    return $cnt;
+}
+
+# Copy tables
 sub copy {
     my $self=shift;
     my $tables=shift;
@@ -42,31 +114,7 @@ sub copy {
     # Tables should be a array-ref.
     # Maybe we first should test that it's an array?
     for my $table (@$tables) {
-
-	# Selecting all the table
-	my $select=$self->{'src'}->prepare("select * from $table") || return undef;
-	$select->execute() || return undef;
-
-	# Deleting all the destination table
-	$self->{dst}->do("delete from $table") || return undef;
-	my $row=$select->fetch(); 
-
-	# Finding the right insert statement
-	# There must be a better way to do this ... suggestions?
-	my @qmarks;
-	for (@$row) {push (@qmarks, '?')};
-	my $qmarks = join(',',@qmarks);
-	my $insert=$self->{dst}->prepare("insert into $table values ($qmarks)") || return undef;
-
-	while (defined $row) {
-	    $cnt++;
-	    $insert->execute(@$row);
-	    $row=$select->fetch;
-	    $insert->finish;
-	}
-
-	$select->finish;
-
+	$cnt+=$self->copy_one_table($table);
     }
     return $cnt;
 }
@@ -77,7 +125,7 @@ __END__
 
 =head1 NAME
 
-DBIx::Copy v. 0.01 - For copying database content from one db to another
+DBIx::Copy 0.02 - For copying database content from one db to another
 
 =head1 SYNOPSIS
 
@@ -87,9 +135,13 @@ use DBI;
 my $dbh_source=DBI->connect(...);
 my $dbh_target=DBI->connect(...);
 
-my $copy_handler=DBIx::Copy->new($dbh_source, $dbh_target, \%options);
+my %options=();
 
-$copy_handler->copy(['tabletobecopied', 'anothertabletobecopied', ...]);
+my $copy_handler=
+    DBIx::Copy->new($dbh_source, $dbh_target, \%options);
+
+$copy_handler->copy
+    (['tabletobecopied', 'anothertabletobecopied', ...]);
 
 =head1 DESCRIPTION
 
@@ -100,15 +152,37 @@ somehow.
 The current version takes a crude "select * from table" from the
 source table, and crudely puts it all into the destination table, with
 a "delete from table" and "insert into table values (?, ?, ?, ...)".
-There might be problems with this approach for all I know.  Anyway, I
-think I can promise that the synopsis above will behave the same way 
-also for future versions of DBIx::Copy.
+Eventually column names are specified (option
+column_translation_table).  There might be problems with this approach
+for all I know.  Anyway, I think I can promise that the synopsis above
+will behave the same way also for future versions of DBIx::Copy.
 
 Currently the module can only copy data content.  Data definitions
 might be handled in a future version.
 
-No options are respected in this version.  Look at the TODO section
-for all planned features.
+=head1 OPTIONS
+
+=head2 table_translation_table
+
+If a table called FOO in the source database should be called Bar in
+the destination database, it's possible to specify it in the options:
+
+    $options{'table_tanslation_table'}={'FOO' => 'Bar'};
+
+=head2 column_translation_table
+
+If the table FOO contains a column with the name
+"LASTUPDATEDTIMESTAMP", and we want to call it "LastUpdated" in the
+table Bar, it's possible to specify it:
+
+    $options{'column_translation_table'}->{FOO}={
+	'ID' => 'id',
+	'TITLE' => 'Title',
+	'LASTUPDATEDTIMESTAMP' => 'LastUpdated'
+	# _All_ columns you want to copy must be mentionated here.  I
+	# will eventually fix a sub for initializing such a hash
+	# reference.
+    }
 
 =head1 ERROR HANDLING AND STABILITY
 
@@ -128,20 +202,6 @@ Be aware that the testing script following this package is NOT GOOD
 ENOUGH, it should be tested by hand using the synopsis above.
 
 =head1 TODO
-
-=head2 translation_table
-
-It should be possible to feed the object with a (reference to) a hash
-containing:
-
-'source_table_name' => 'target_table_name' 
-(...)
-'source_table_name' => { 
-    'source_column_name' => 'target_column_name'
-}
-
-...and the module will copy from one table to another even if the
-table names or column names are a bit different.
 
 =head2 data_definitions
 
