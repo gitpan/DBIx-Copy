@@ -2,6 +2,7 @@ Revision history for Perl extension DBIx::Copy.
 
 0.1 - Everything is new
 0.2 - Translation tables
+0.3 - It should be more flexible now.
 
 TODO
 

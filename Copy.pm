@@ -12,7 +12,7 @@ use vars qw( $VERSION );
 use DBI;
 
 # Remember to update the POD (yeah, even the version number)!
-$VERSION=0.02;
+$VERSION=0.03;
 
 # Initiate a new object:
 sub new {
@@ -33,13 +33,73 @@ sub new {
     return $self;
 } 
 
-# Copy the data - without taking any parameters into consideration for
-# the time beeing.  Returns number of rows copied.  It might be handy
-# for convertion tools to inherit this class and override this sub for
-# tables that needs special handling.
+# It might be handy for convertion tools to inherit this class and
+# override this sub for tables that needs special handling:
 
-# This seems like a bad way to do it - I branch too much of the code
-# dependent on whether column_translation_table is set or not.
+sub construct_select_sth {
+    my $self=shift;
+    my $table=shift;
+
+    return $self->{src}->prepare
+	($self->construct_select_statement($table))
+	    || undef;
+
+}
+
+sub construct_insert_sth {
+    my $self=shift;
+    my $table=shift;
+    my $dest=shift;
+    my $row=shift;
+
+    return $self->{dst}->prepare
+	($self->construct_insert_statement($table, $dest, $row))
+	    || undef;
+}
+
+# It might be handy for convertion tools to inherit this class and
+# override this sub for tables that needs special handling:
+
+sub construct_select_statement {
+    my $self=shift;
+    my $table=shift;
+
+    if (exists $self->{opts}->{column_translation_table}->{$table}) {
+	my $c=$self->{opts}->{column_translation_table}->{$table};
+	my $cols=join(",", keys(%{$self->{opts}->{column_translation_table}->{$table}}));
+	return "select $cols from $table";
+    } else {
+	return "select * from $table";
+    }
+}
+
+sub construct_insert_statement {
+    my $self=shift;
+    my $table=shift;
+    my $dest=shift;
+    my $row=shift;
+    
+    if (exists $self->{opts}->{column_translation_table}->{$table}) {
+	# Finding the right insert statement
+	# There must be a better way to do this ... suggestions?
+	my @qmarks;
+	for (keys %{$self->{opts}->{column_translation_table}->{$table}}) {
+	    push (@qmarks, '?');
+	}
+	my $qmarks = join(',',@qmarks);
+	my $cols=join(",", values(%{$self->{opts}->{column_translation_table}->{$table}}));
+	return "insert into $dest ($cols) values ($qmarks)"
+    } else {
+	# Finding the right insert statement
+	# There must be a better way to do this ... suggestions?
+	my @qmarks;
+	for (@$row) {push (@qmarks, '?')};
+	my $qmarks = join(',',@qmarks);
+	return "insert into $dest values ($qmarks)";
+    }
+}
+
+# Copy one table
 sub copy_one_table {
     my $self=shift;
     my $table=shift;
@@ -49,59 +109,54 @@ sub copy_one_table {
     my $dest = $self->{opts}->{table_translation_table}->{$table} || $table;
     
     my $select;
-    my $insert;
+    my $insert_sth;
     my $row;
 
-    if (exists $self->{opts}->{column_translation_table}->{$table}) {
+    # Selecting referenced columns
+    $select=$self->construct_select_sth($table);
+    
+    $select->execute() || return undef;
+    $row=$select->fetch(); 
 
-	my $c=$self->{opts}->{column_translation_table}->{$table};
+    $insert_sth=$self->construct_insert_sth($table, $dest, $row);
 
-	# Selecting referenced columns
-	my $cols=join(",", keys(%$c));
-	$select=$self->{'src'}->prepare("select $cols from $table") || return undef;
-	$select->execute() || return undef;
-	
-	# Deleting all the destination table
-	$self->{dst}->do("delete from $dest") || return undef;
-	
-	# Finding the right insert statement
-	# There must be a better way to do this ... suggestions?
-	my @qmarks;
-	for (keys %$c) {push (@qmarks, '?')};
+    my $insert_row=$self->get_insert_row_sub($table, $dest);
 
-	$cols=join(",", values(%$c));
-
-	my $qmarks = join(',',@qmarks);
-	$insert=$self->{dst}->prepare("insert into $dest ($cols) values ($qmarks)") || return undef;
-
-	$row=$select->fetch(); 
-
-    } else {
-
-	# Selecting all the table
-	$select=$self->{'src'}->prepare("select * from $table") || return undef;
-	$select->execute() || return undef;
-	
-	# Deleting all the destination table
-	$self->{dst}->do("delete from $dest") || return undef;
-	$row=$select->fetch(); 
-	
-	# Finding the right insert statement
-	# There must be a better way to do this ... suggestions?
-	my @qmarks;
-	for (@$row) {push (@qmarks, '?')};
-	my $qmarks = join(',',@qmarks);
-	$insert=$self->{dst}->prepare("insert into $dest values ($qmarks)") || return undef;
-    }
+    # Deleting all the destination table
+    $self->{dst}->do("delete from $dest") || return undef;
 	
     while (defined $row) {
 	$cnt++;
-	$insert->execute(@$row);
+	$insert_row->($self, $row, $insert_sth);
 	$row=$select->fetch;
-	$insert->finish;
     }
     $select->finish;
     return $cnt;
+}
+
+# It might be handy for convertion tools to inherit this class and
+# override this sub for tables that needs special handling.  See
+# DBIx::Copy::UpgradeRT::get_insert_row_sub for an example.
+
+sub get_insert_row_sub {
+    my $self=shift;
+
+    # ehem..
+       # Honestly ... I'm not _really_ sure that I'm doing things The
+       # Right Way here ... but this seems to work:
+       # return *{ref $self . '::insert_row'}{CODE};
+    # absolutely not! well..
+
+    return \&DBIx::Copy::insert_row;
+    
+}
+
+sub insert_row {
+    my $self=shift;
+    my $row=shift;
+    my $insert_sth=shift;
+    $insert_sth->execute(@$row);
+    $insert_sth->finish;
 }
 
 # Copy tables
@@ -145,20 +200,16 @@ $copy_handler->copy
 
 =head1 DESCRIPTION
 
-For copying a DB.  Future versions might handle mirroring as well, but
-it's generally better if the source might send over a transaction log
-somehow.
+This Module might help you copying a DB.  Currently only the data
+itself can be copied, future versions will handle the DD (data
+definitons) as well.  This module can also be used for "upgrading" a
+DB when severe changes has been done to the underlying tables.  I have
+contributed DBIx::Copy::UpgradeRT as an example.
 
-The current version takes a crude "select * from table" from the
-source table, and crudely puts it all into the destination table, with
-a "delete from table" and "insert into table values (?, ?, ?, ...)".
-Eventually column names are specified (option
-column_translation_table).  There might be problems with this approach
-for all I know.  Anyway, I think I can promise that the synopsis above
-will behave the same way also for future versions of DBIx::Copy.
-
-Currently the module can only copy data content.  Data definitions
-might be handled in a future version.
+The next version will also provide a mirroring/merging feature - thus the
+old version and old DB might be rolling along, and the script might be
+executed from the crontab and update the new tables.  However, there should
+be Better Ways for handling DB mirroring on a permanent basis.
 
 =head1 OPTIONS
 
@@ -183,6 +234,24 @@ table Bar, it's possible to specify it:
 	# will eventually fix a sub for initializing such a hash
 	# reference.
     }
+
+
+=head1 INHERITATING METHODS
+
+I've optimized for flexibility, not speed.  The following methods are
+"separated" out just in case you'd like to overload them especially
+for table-specific tasks:
+
+=head2 insert_row 
+
+It might be overloaded i.e. if some of the values needs extra
+calculation.  See the code for details.
+
+=head2 sub get_insert_row_sub
+
+This one should return a reference to insert_row.  I just think that
+if an inheritating class is made and is supposed to serve several
+tables, then I don't want the if statement for checking 
 
 =head1 ERROR HANDLING AND STABILITY
 
@@ -253,3 +322,5 @@ Tobias Brox <tobix@irctos.org>. Comments, bug reports, patches and
 flames are appreciated.
 
 =cut
+
+

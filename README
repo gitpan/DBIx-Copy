@@ -13,28 +13,20 @@ POD.
              ***************************************
              DESCRIPTION
 
-This should be an exact copy of the DESCRIPTION part in the POD:
+This Module might help you copying a DB.  Currently only the data itself can
+be copied, future versions will handle the DD (data definitons) as well.
 
-== 
-For copying a DB.  Future versions might handle mirroring as well, but
-it's generally better if the source might send over a transaction log
-somehow.
+This module can also be used for "upgrading" a DB when severe changes has
+been done to the underlying tables.  I have contributed
+DBIx::Copy::UpgradeRT as an example.  The data structures for RT - Request
+Tracker - was severely modified between version 1.0 and 1.1.  Indeed so
+badly shaken up that DBIx::Copy aren't allowed to do much on its own hand
+anyway :)
 
-The current version takes a crude "select * from table" from the
-source table, and crudely puts it all into the destination table, with
-a "delete from table" and "insert into table values (?, ?, ?, ...)".
-There might be problems with this approach for all I know.  Anyway, I
-think I can promise that the synopsis above will behave the same way 
-also for future versions of DBIx::Copy.
-
-Currently the module can only copy data content.  Data definitions
-might be handled in a future version.
-
-No options are respected in this version.  Look at the TODO section
-for all planned features.
-== 
-
-Please mail me if you have needs this module can't take care of.
+The next version will also provide a mirroring/merging feature - thus the
+old version and old DB might be rolling along, and the script might be
+executed from the crontab and update the new tables.  However, there should
+be Better Ways for handling DB mirroring on a permanent basis.
 
 
              ***************************************
@@ -84,3 +76,13 @@ Standard installation:
 
 Mail tobix@irctos.org for more information. I'm glad to get any
 feedback whether this module is usable or not.
+
+
+             ***************************************
+	     LICENSE
+
+Copyright (c) 2000 Tobias Brox <tobix@irctos.org>. All rights reserved. This
+program is free software; you can redistribute it and/or modify it according
+to the GNU Public License.
+
+	     
